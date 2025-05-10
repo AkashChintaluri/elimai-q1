@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medical Dictation System</title>
+    <script src="https://unpkg.com/extendable-media-recorder@7.0.0/dist/index.js"></script>
+    <script src="https://unpkg.com/extendable-media-recorder-wav-encoder@7.0.0/dist/index.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        #recordButton {
+            background-color: #ff4444;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+        #recordButton.recording {
+            background-color: #cc0000;
+        }
+        #fileInput {
+            display: none;
+        }
+        .file-upload {
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        #output {
+            border: 1px solid #ccc;
+            padding: 20px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+        }
+        .status {
+            color: #666;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Medical Dictation System</h1>
+        
+        <div class="button-group">
+            <button id="recordButton">Start Recording</button>
+            <label class="file-upload">
+                Upload Audio File
+                <input type="file" id="fileInput" accept="audio/*">
+            </label>
+        </div>
+
+        <div class="status" id="status"></div>
+        
+        <div id="output"></div>
+    </div>
+
+    <script>
+        const recordButton = document.getElementById('recordButton');
+        const fileInput = document.getElementById('fileInput');
+        const status = document.getElementById('status');
+        const output = document.getElementById('output');
+        let mediaRecorder;
+        let audioChunks = [];
+        let audioContext;
+        let audioWorklet;
+
+        // Handle file upload
+        fileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                status.textContent = 'Processing file...';
+                await processAudioFile(file);
+            }
+        });
+
+        // Convert audio data to WAV format
+        function audioBufferToWav(buffer) {
+            const numChannels = 1;
+            const sampleRate = 16000;
+            const format = 1; // PCM
+            const bitDepth = 16;
+            
+            const bytesPerSample = bitDepth / 8;
+            const blockAlign = numChannels * bytesPerSample;
+            
+            const data = buffer.getChannelData(0);
+            const dataLength = data.length * bytesPerSample;
+            const bufferLength = 44 + dataLength;
+            
+            const arrayBuffer = new ArrayBuffer(bufferLength);
+            const view = new DataView(arrayBuffer);
+            
+            // RIFF identifier
+            writeString(view, 0, 'RIFF');
+            // RIFF chunk length
+            view.setUint32(4, 36 + dataLength, true);
+            // RIFF type
+            writeString(view, 8, 'WAVE');
+            // format chunk identifier
+            writeString(view, 12, 'fmt ');
+            // format chunk length
+            view.setUint32(16, 16, true);
+            // sample format (raw)
+            view.setUint16(20, format, true);
+            // channel count
+            view.setUint16(22, numChannels, true);
+            // sample rate
+            view.setUint32(24, sampleRate, true);
+            // byte rate (sample rate * block align)
+            view.setUint32(28, sampleRate * blockAlign, true);
+            // block align (channel count * bytes per sample)
+            view.setUint16(32, blockAlign, true);
+            // bits per sample
+            view.setUint16(34, bitDepth, true);
+            // data chunk identifier
+            writeString(view, 36, 'data');
+            // data chunk length
+            view.setUint32(40, dataLength, true);
+            
+            // Write the PCM samples
+            const offset = 44;
+            for (let i = 0; i < data.length; i++) {
+                const sample = Math.max(-1, Math.min(1, data[i]));
+                view.setInt16(offset + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+            }
+            
+            return new Blob([arrayBuffer], { type: 'audio/wav' });
+        }
+
+        function writeString(view, offset, string) {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        }
+
+        // Handle recording
+        recordButton.addEventListener('click', async () => {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                recordButton.textContent = 'Start Recording';
+                recordButton.classList.remove('recording');
+            } else {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        audio: {
+                            channelCount: 1,
+                            sampleRate: 16000
+                        }
+                    });
+                    
+                    // Create audio context
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                        sampleRate: 16000
+                    });
+                    
+                    // Create media recorder with default format
+                    mediaRecorder = new MediaRecorder(stream);
+                    audioChunks = [];
+
+                    mediaRecorder.ondataavailable = (event) => {
+                        audioChunks.push(event.data);
+                    };
+
+                    mediaRecorder.onstop = async () => {
+                        // Convert recorded audio to WAV
+                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                        const arrayBuffer = await audioBlob.arrayBuffer();
+                        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                        const wavBlob = audioBufferToWav(audioBuffer);
+                        
+                        const audioFile = new File([wavBlob], 'recording.wav', { type: 'audio/wav' });
+                        await processAudioFile(audioFile);
+                    };
+
+                    mediaRecorder.start();
+                    recordButton.textContent = 'Stop Recording';
+                    recordButton.classList.add('recording');
+                    status.textContent = 'Recording...';
+                } catch (err) {
+                    console.error('Error accessing microphone:', err);
+                    status.textContent = 'Error accessing microphone';
+                }
+            }
+        });
+
+        async function processAudioFile(file) {
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+
+                status.textContent = 'Transcribing...';
+                const response = await fetch('/transcribe', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => null);
+                    throw new Error(errorData?.detail || `HTTP error! status: ${response.status}`);
+                }
+
+                const result = await response.json();
+                displayResults(result);
+                status.textContent = 'Transcription complete';
+            } catch (err) {
+                console.error('Error processing audio:', err);
+                status.textContent = 'Error processing audio';
+                output.textContent = `Error: ${err.message}`;
+            }
+        }
+
+        function displayResults(result) {
+            let outputText = 'Transcribed Text:\n';
+            outputText += result.text + '\n\n';
+            
+            outputText += 'Structured Data:\n';
+            outputText += JSON.stringify(result.structured_data, null, 2);
+            
+            output.textContent = outputText;
+        }
+    </script>
+</body>
+</html> 

@@ -1,0 +1,11 @@
+Category,Term,Code,Description
+Lab Test,CBC,LAB001,Complete Blood Count
+Lab Test,CMP,LAB002,Comprehensive Metabolic Panel
+Lab Test,Lipid Panel,LAB003,Lipid Profile
+Lab Test,Hemoglobin A1C,LAB004,Glycated Hemoglobin
+Diagnosis,Hypertension,DX001,High Blood Pressure
+Diagnosis,Type 2 Diabetes,DX002,Diabetes Mellitus Type 2
+Diagnosis,Coronary Artery Disease,DX003,CAD
+Procedure,ECG,PROC001,Electrocardiogram
+Procedure,X-Ray,PROC002,Radiographic Imaging
+Procedure,CT Scan,PROC003,Computed Tomography 
