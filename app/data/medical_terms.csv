@@ -3,9 +3,25 @@ Lab Test,CBC,LAB001,Complete Blood Count
 Lab Test,CMP,LAB002,Comprehensive Metabolic Panel
 Lab Test,Lipid Panel,LAB003,Lipid Profile
 Lab Test,Hemoglobin A1C,LAB004,Glycated Hemoglobin
+Lab Test,Troponin,LAB005,Cardiac Biomarker
+Lab Test,WBC Count,LAB006,White Blood Cell Count
+Lab Test,Urinalysis,LAB007,Urine Analysis
 Diagnosis,Hypertension,DX001,High Blood Pressure
 Diagnosis,Type 2 Diabetes,DX002,Diabetes Mellitus Type 2
 Diagnosis,Coronary Artery Disease,DX003,CAD
+Diagnosis,Acute Myocardial Infarction,DX004,Heart Attack
+Diagnosis,Acute Appendicitis,DX005,Inflammation of Appendix
 Procedure,ECG,PROC001,Electrocardiogram
 Procedure,X-Ray,PROC002,Radiographic Imaging
-Procedure,CT Scan,PROC003,Computed Tomography 
+Procedure,CT Scan,PROC003,Computed Tomography
+Procedure,Coronary Angiography,PROC004,Cardiac Catheterization
+Procedure,Colonoscopy,PROC005,Colon Examination
+Procedure,Endoscopy,PROC006,Upper GI Examination
+Procedure,Appendectomy,PROC007,Surgical Removal of Appendix
+Medication,Aspirin,MED001,Acetylsalicylic Acid
+Medication,Statins,MED002,HMG-CoA Reductase Inhibitors
+Medication,IV Antibiotics,MED003,Intravenous Antibiotics
+Treatment,Lifestyle Modifications,TX001,Health Behavior Changes
+Treatment,Dietary Consultation,TX002,Nutrition Counseling
+Treatment,Exercise Program,TX003,Physical Activity Plan 
+Medication,Metformin,MED004,Oral diabetes medication that helps control blood sugar levels

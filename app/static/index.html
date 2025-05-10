@@ -3,114 +3,203 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Medical Dictation System</title>
-    <script src="https://unpkg.com/extendable-media-recorder@7.0.0/dist/index.js"></script>
-    <script src="https://unpkg.com/extendable-media-recorder-wav-encoder@7.0.0/dist/index.js"></script>
+    <title>Medical Dictation</title>
+    <!-- Tailwind CSS for modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome for icons -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
+            font-family: 'Inter', sans-serif;
+            background-color: #f4f7fc;
+            color: #1f2937;
         }
-        .container {
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
+        .card {
+            background: white;
+            border-radius: 1rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+            transition: transform 0.2s, box-shadow 0.2s;
         }
-        .button-group {
-            display: flex;
-            gap: 10px;
+        .card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.1);
         }
-        button {
-            padding: 10px 20px;
-            font-size: 16px;
-            cursor: pointer;
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
         }
-        #recordButton {
-            background-color: #ff4444;
-            color: white;
-            border: none;
-            border-radius: 4px;
+        .btn:hover {
+            transform: translateY(-2px);
         }
-        #recordButton.recording {
-            background-color: #cc0000;
+        .recording {
+            color: #ef4444;
+            animation: pulse 1.5s infinite;
         }
-        #fileInput {
-            display: none;
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
         }
-        .file-upload {
-            padding: 10px 20px;
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-        }
-        #output {
-            border: 1px solid #ccc;
-            padding: 20px;
-            border-radius: 4px;
-            white-space: pre-wrap;
-        }
-        .status {
-            color: #666;
-            font-style: italic;
+        .term-item {
+            border-left: 4px solid #3b82f6;
+            background: #eff6ff;
+            border-radius: 0.5rem;
         }
     </style>
 </head>
-<body>
-    <div class="container">
-        <h1>Medical Dictation System</h1>
-        
-        <div class="button-group">
-            <button id="recordButton">Start Recording</button>
-            <label class="file-upload">
-                Upload Audio File
-                <input type="file" id="fileInput" accept="audio/*">
-            </label>
+<body class="min-h-screen">
+    <!-- Header -->
+    <header class="bg-white shadow-sm py-6">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <h1 class="text-3xl font-bold text-gray-900">Medical Dictation</h1>
+            <p class="text-gray-600 mt-2">Transcribe medical audio and extract key terms</p>
+            <a href="/terms" class="mt-4 inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 font-medium">
+                <i class="fas fa-list"></i> Manage Terms
+            </a>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+        <!-- Record/Upload Card -->
+        <div class="card p-6">
+            <h2 class="text-xl font-semibold flex items-center gap-2 mb-4">
+                <i class="fas fa-microphone text-blue-600"></i> Record or Upload
+            </h2>
+            <div class="flex flex-wrap gap-3">
+                <button id="recordButton" class="btn bg-blue-600 text-white hover:bg-blue-700">
+                    <i class="fas fa-microphone"></i> Record
+                </button>
+                <button id="stopButton" class="btn bg-red-600 text-white hover:bg-red-700" disabled>
+                    <i class="fas fa-stop"></i> Stop
+                </button>
+                <button id="uploadButton" class="btn bg-green-600 text-white hover:bg-green-700">
+                    <i class="fas fa-upload"></i> Upload
+                </button>
+                <button id="formatToggle" class="btn bg-gray-600 text-white hover:bg-gray-700">
+                    <i class="fas fa-exchange-alt"></i> Toggle Format
+                </button>
+            </div>
+            <input type="file" id="audioFile" accept="audio/*" class="hidden">
+            <div id="recordingStatus" class="mt-4 hidden">
+                <span class="recording">
+                    <i class="fas fa-circle"></i> Recording...
+                </span>
+            </div>
         </div>
 
-        <div class="status" id="status"></div>
-        
-        <div id="output"></div>
-    </div>
+        <!-- Results Card -->
+        <div class="card p-6">
+            <h2 class="text-xl font-semibold flex items-center gap-2 mb-4">
+                <i class="fas fa-file-alt text-blue-600"></i> Transcription
+            </h2>
+            <div id="output" class="text-gray-700"></div>
+        </div>
+    </main>
 
+    <!-- JavaScript -->
     <script>
+        let mediaRecorder, audioChunks = [], isPrettyFormat = true;
         const recordButton = document.getElementById('recordButton');
-        const fileInput = document.getElementById('fileInput');
-        const status = document.getElementById('status');
+        const stopButton = document.getElementById('stopButton');
+        const uploadButton = document.getElementById('uploadButton');
+        const formatToggle = document.getElementById('formatToggle');
+        const audioFile = document.getElementById('audioFile');
+        const recordingStatus = document.getElementById('recordingStatus');
         const output = document.getElementById('output');
-        let mediaRecorder;
-        let audioChunks = [];
-        let audioContext;
-        let audioWorklet;
 
-        // Handle file upload
-        fileInput.addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (file) {
-                status.textContent = 'Processing file...';
-                await processAudioFile(file);
+        // Record audio
+        recordButton.addEventListener('click', async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        channelCount: 1,  // Mono audio
+                        sampleRate: 16000,  // 16kHz sample rate
+                        sampleSize: 16,    // 16-bit audio
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    } 
+                });
+                
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'audio/webm;codecs=opus',
+                    audioBitsPerSecond: 16000
+                });
+                
+                audioChunks = [];
+                mediaRecorder.addEventListener('dataavailable', e => audioChunks.push(e.data));
+                mediaRecorder.addEventListener('stop', async () => {
+                    // Convert to WAV format
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
+                    const arrayBuffer = await audioBlob.arrayBuffer();
+                    const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                        sampleRate: 16000
+                    });
+                    
+                    // Decode the audio data
+                    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                    
+                    // Convert to WAV
+                    const wavBlob = await convertToWav(audioBuffer);
+                    sendAudioToServer(wavBlob);
+                });
+                
+                mediaRecorder.start();
+                recordButton.disabled = true;
+                stopButton.disabled = false;
+                recordingStatus.classList.remove('hidden');
+            } catch (err) {
+                console.error('Microphone error:', err);
+                output.innerHTML = `<div class="text-red-600 flex items-center gap-2"><i class="fas fa-exclamation-circle"></i> Microphone access denied.</div>`;
             }
         });
 
-        // Convert audio data to WAV format
-        function audioBufferToWav(buffer) {
-            const numChannels = 1;
+        // Stop recording
+        stopButton.addEventListener('click', () => {
+            mediaRecorder.stop();
+            recordButton.disabled = false;
+            stopButton.disabled = true;
+            recordingStatus.classList.add('hidden');
+        });
+
+        // Upload audio
+        uploadButton.addEventListener('click', () => audioFile.click());
+        audioFile.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) sendAudioToServer(file);
+        });
+
+        // Toggle format
+        formatToggle.addEventListener('click', () => {
+            isPrettyFormat = !isPrettyFormat;
+            const currentData = output.getAttribute('data-last-response');
+            if (currentData) {
+                try {
+                    const data = JSON.parse(currentData);
+                    displayOutput(data);
+                } catch (error) {
+                    console.error('Error parsing stored data:', error);
+                }
+            }
+        });
+
+        // Convert AudioBuffer to WAV format
+        async function convertToWav(audioBuffer) {
+            const numChannels = 1;  // Mono
             const sampleRate = 16000;
-            const format = 1; // PCM
+            const format = 1;  // PCM
             const bitDepth = 16;
             
             const bytesPerSample = bitDepth / 8;
             const blockAlign = numChannels * bytesPerSample;
             
-            const data = buffer.getChannelData(0);
-            const dataLength = data.length * bytesPerSample;
-            const bufferLength = 44 + dataLength;
-            
-            const arrayBuffer = new ArrayBuffer(bufferLength);
-            const view = new DataView(arrayBuffer);
+            const dataLength = audioBuffer.length * numChannels * bytesPerSample;
+            const buffer = new ArrayBuffer(44 + dataLength);
+            const view = new DataView(buffer);
             
             // RIFF identifier
             writeString(view, 0, 'RIFF');
@@ -141,12 +230,14 @@
             
             // Write the PCM samples
             const offset = 44;
-            for (let i = 0; i < data.length; i++) {
-                const sample = Math.max(-1, Math.min(1, data[i]));
-                view.setInt16(offset + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+            const channelData = audioBuffer.getChannelData(0);
+            for (let i = 0; i < channelData.length; i++) {
+                const sample = Math.max(-1, Math.min(1, channelData[i]));
+                const value = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+                view.setInt16(offset + i * 2, value, true);
             }
             
-            return new Blob([arrayBuffer], { type: 'audio/wav' });
+            return new Blob([buffer], { type: 'audio/wav' });
         }
 
         function writeString(view, offset, string) {
@@ -155,91 +246,154 @@
             }
         }
 
-        // Handle recording
-        recordButton.addEventListener('click', async () => {
-            if (mediaRecorder && mediaRecorder.state === 'recording') {
-                mediaRecorder.stop();
-                recordButton.textContent = 'Start Recording';
-                recordButton.classList.remove('recording');
-            } else {
-                try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ 
-                        audio: {
-                            channelCount: 1,
-                            sampleRate: 16000
-                        }
-                    });
-                    
-                    // Create audio context
-                    audioContext = new (window.AudioContext || window.webkitAudioContext)({
-                        sampleRate: 16000
-                    });
-                    
-                    // Create media recorder with default format
-                    mediaRecorder = new MediaRecorder(stream);
-                    audioChunks = [];
-
-                    mediaRecorder.ondataavailable = (event) => {
-                        audioChunks.push(event.data);
-                    };
-
-                    mediaRecorder.onstop = async () => {
-                        // Convert recorded audio to WAV
-                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                        const arrayBuffer = await audioBlob.arrayBuffer();
-                        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-                        const wavBlob = audioBufferToWav(audioBuffer);
-                        
-                        const audioFile = new File([wavBlob], 'recording.wav', { type: 'audio/wav' });
-                        await processAudioFile(audioFile);
-                    };
-
-                    mediaRecorder.start();
-                    recordButton.textContent = 'Stop Recording';
-                    recordButton.classList.add('recording');
-                    status.textContent = 'Recording...';
-                } catch (err) {
-                    console.error('Error accessing microphone:', err);
-                    status.textContent = 'Error accessing microphone';
-                }
-            }
-        });
-
-        async function processAudioFile(file) {
+        // Send audio to server
+        async function sendAudioToServer(audioBlob) {
             try {
                 const formData = new FormData();
-                formData.append('file', file);
+                formData.append('audio', audioBlob, 'recording.wav');
 
-                status.textContent = 'Transcribing...';
-                const response = await fetch('/transcribe', {
+                // Show loading state
+                output.innerHTML = `<div class="flex justify-center items-center gap-2">
+                    <svg class="animate-spin h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l4-4-4-4v4a8 8 0 11-8 8z"></path>
+                    </svg>
+                    Processing audio...
+                </div>`;
+
+                const response = await fetch('/api/transcribe', {
                     method: 'POST',
                     body: formData
                 });
 
-                if (!response.ok) {
-                    const errorData = await response.json().catch(() => null);
-                    throw new Error(errorData?.detail || `HTTP error! status: ${response.status}`);
-                }
+                const data = await response.json();
+                console.log('Server response:', data); // Debug log
 
-                const result = await response.json();
-                displayResults(result);
-                status.textContent = 'Transcription complete';
-            } catch (err) {
-                console.error('Error processing audio:', err);
-                status.textContent = 'Error processing audio';
-                output.textContent = `Error: ${err.message}`;
+                if (data.status === 'success' && data.data) {
+                    displayOutput(data.data);
+                } else {
+                    showError(data.message || 'Failed to process audio');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                showError('Failed to process audio');
             }
         }
 
-        function displayResults(result) {
-            let outputText = 'Transcribed Text:\n';
-            outputText += result.text + '\n\n';
-            
-            outputText += 'Structured Data:\n';
-            outputText += JSON.stringify(result.structured_data, null, 2);
-            
-            output.textContent = outputText;
+        // Display output
+        function displayOutput(data) {
+            if (!data) {
+                showError('No data received from server');
+                return;
+            }
+
+            // Store the current response for format toggle
+            output.setAttribute('data-last-response', JSON.stringify(data));
+
+            const outputDiv = document.getElementById('output');
+            outputDiv.innerHTML = '';
+
+            if (!isPrettyFormat) {
+                // Raw JSON format
+                const pre = document.createElement('pre');
+                pre.className = 'bg-gray-100 p-4 rounded-lg text-sm overflow-auto';
+                pre.textContent = JSON.stringify(data, null, 2);
+                outputDiv.appendChild(pre);
+                return;
+            }
+
+            // Pretty format
+            // Display transcription
+            if (data.transcription) {
+                const transcriptionDiv = document.createElement('div');
+                transcriptionDiv.className = 'mb-6';
+                transcriptionDiv.innerHTML = `
+                    <h3 class="text-lg font-semibold mb-2">Transcription</h3>
+                    <p class="text-gray-700">${data.transcription}</p>
+                `;
+                outputDiv.appendChild(transcriptionDiv);
+            }
+
+            // Display medical terms
+            if (data.medical_terms) {
+                const termsDiv = document.createElement('div');
+                termsDiv.className = 'space-y-4';
+                
+                // Create sections for each category
+                const categories = {
+                    lab_tests: 'Lab Tests',
+                    diagnoses: 'Diagnoses',
+                    procedures: 'Procedures',
+                    medications: 'Medications',
+                    treatments: 'Treatments'
+                };
+
+                for (const [category, label] of Object.entries(categories)) {
+                    const terms = data.medical_terms[category] || [];
+                    if (terms.length > 0) {
+                        const categoryDiv = document.createElement('div');
+                        categoryDiv.className = 'bg-white rounded-lg shadow p-4';
+                        categoryDiv.innerHTML = `
+                            <h3 class="text-lg font-semibold mb-2">${label}</h3>
+                            <ul class="space-y-2">
+                                ${terms.map(term => `
+                                    <li class="flex items-start">
+                                        <span class="font-medium">${term.name}</span>
+                                        <span class="mx-2 text-gray-400">|</span>
+                                        <code class="bg-gray-100 px-2 py-1 rounded text-sm">${term.code}</code>
+                                        <span class="mx-2 text-gray-400">|</span>
+                                        <span class="text-gray-600">${term.description}</span>
+                                    </li>
+                                `).join('')}
+                            </ul>
+                        `;
+                        termsDiv.appendChild(categoryDiv);
+                    }
+                }
+
+                if (termsDiv.children.length > 0) {
+                    outputDiv.appendChild(termsDiv);
+                } else {
+                    const noTermsDiv = document.createElement('div');
+                    noTermsDiv.className = 'text-gray-500 text-center py-4';
+                    noTermsDiv.textContent = 'No medical terms found in the transcription';
+                    outputDiv.appendChild(noTermsDiv);
+                }
+            }
+
+            // Display summary if available
+            if (data.summary) {
+                const summaryDiv = document.createElement('div');
+                summaryDiv.className = 'mt-6 grid grid-cols-2 md:grid-cols-5 gap-4';
+                summaryDiv.innerHTML = `
+                    <div class="bg-blue-50 p-4 rounded-lg text-center">
+                        <div class="text-2xl font-bold text-blue-600">${data.summary.lab_tests}</div>
+                        <div class="text-sm text-blue-800">Lab Tests</div>
+                    </div>
+                    <div class="bg-green-50 p-4 rounded-lg text-center">
+                        <div class="text-2xl font-bold text-green-600">${data.summary.diagnoses}</div>
+                        <div class="text-sm text-green-800">Diagnoses</div>
+                    </div>
+                    <div class="bg-purple-50 p-4 rounded-lg text-center">
+                        <div class="text-2xl font-bold text-purple-600">${data.summary.procedures}</div>
+                        <div class="text-sm text-purple-800">Procedures</div>
+                    </div>
+                    <div class="bg-yellow-50 p-4 rounded-lg text-center">
+                        <div class="text-2xl font-bold text-yellow-600">${data.summary.medications}</div>
+                        <div class="text-sm text-yellow-800">Medications</div>
+                    </div>
+                    <div class="bg-red-50 p-4 rounded-lg text-center">
+                        <div class="text-2xl font-bold text-red-600">${data.summary.treatments}</div>
+                        <div class="text-sm text-red-800">Treatments</div>
+                    </div>
+                `;
+                outputDiv.appendChild(summaryDiv);
+            }
+        }
+
+        function showError(message) {
+            output.innerHTML = `<div class="text-red-600 flex items-center gap-2"><i class="fas fa-exclamation-circle"></i> ${message}</div>`;
         }
     </script>
 </body>
-</html> 
+</html>
