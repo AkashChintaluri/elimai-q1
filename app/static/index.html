@@ -77,6 +77,9 @@
                 <button id="stopButton" class="btn bg-red-600 text-white hover:bg-red-700" disabled>
                     <i class="fas fa-stop"></i> Stop
                 </button>
+                <button id="cancelButton" class="btn bg-gray-600 text-white hover:bg-gray-700 hidden">
+                    <i class="fas fa-times"></i> Cancel
+                </button>
                 <button id="uploadButton" class="btn bg-green-600 text-white hover:bg-green-700">
                     <i class="fas fa-upload"></i> Upload
                 </button>
@@ -96,18 +99,24 @@
         <div class="card p-6">
             <h2 class="text-xl font-semibold flex items-center gap-2 mb-4">
                 <i class="fas fa-file-alt text-blue-600"></i> Transcription
+                <button id="clearButton" class="btn bg-red-600 text-white hover:bg-red-700 ml-auto">
+                    <i class="fas fa-trash"></i> Clear All
+                </button>
             </h2>
-            <div id="output" class="text-gray-700"></div>
+            <div id="output" class="text-gray-700 space-y-4"></div>
         </div>
     </main>
 
     <!-- JavaScript -->
     <script>
         let mediaRecorder, audioChunks = [], isPrettyFormat = true;
+        let transcriptions = []; // Store all transcriptions
         const recordButton = document.getElementById('recordButton');
         const stopButton = document.getElementById('stopButton');
+        const cancelButton = document.getElementById('cancelButton');
         const uploadButton = document.getElementById('uploadButton');
         const formatToggle = document.getElementById('formatToggle');
+        const clearButton = document.getElementById('clearButton');
         const audioFile = document.getElementById('audioFile');
         const recordingStatus = document.getElementById('recordingStatus');
         const output = document.getElementById('output');
@@ -117,60 +126,111 @@
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ 
                     audio: {
-                        channelCount: 1,  // Mono audio
-                        sampleRate: 16000,  // 16kHz sample rate
-                        sampleSize: 16,    // 16-bit audio
+                        channelCount: 1,
+                        sampleRate: 16000,
+                        sampleSize: 16,
                         echoCancellation: true,
-                        noiseSuppression: true
+                        noiseSuppression: true,
+                        autoGainControl: true
                     } 
                 });
                 
                 mediaRecorder = new MediaRecorder(stream, {
                     mimeType: 'audio/webm;codecs=opus',
-                    audioBitsPerSecond: 16000
+                    audioBitsPerSecond: 16000,
+                    timeslice: 1000 // Process in 1-second chunks
                 });
                 
                 audioChunks = [];
                 mediaRecorder.addEventListener('dataavailable', e => audioChunks.push(e.data));
                 mediaRecorder.addEventListener('stop', async () => {
-                    // Convert to WAV format
+                    if (audioChunks.length === 0) {
+                        showError('No audio was recorded. Please try again.');
+                        return;
+                    }
+                    
                     const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
                     const arrayBuffer = await audioBlob.arrayBuffer();
+                    
+                    // Create audio context with optimized settings
                     const audioContext = new (window.AudioContext || window.webkitAudioContext)({
-                        sampleRate: 16000
+                        sampleRate: 16000,
+                        latencyHint: 'interactive'
                     });
                     
-                    // Decode the audio data
+                    // Decode audio data
                     const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
                     
-                    // Convert to WAV
+                    // Quick check for silence using a more efficient method
+                    const channelData = audioBuffer.getChannelData(0);
+                    const isSilent = channelData.some(sample => Math.abs(sample) > 0.01) ? false : true;
+                    
+                    if (isSilent) {
+                        showError('The recorded audio appears to be silent. Please try again.');
+                        return;
+                    }
+                    
+                    // Convert to WAV with optimized settings
                     const wavBlob = await convertToWav(audioBuffer);
-                    sendAudioToServer(wavBlob);
+                    
+                    // Verify WAV format before sending
+                    if (wavBlob.type !== 'audio/wav') {
+                        showError('Failed to convert audio to WAV format. Please try again.');
+                        return;
+                    }
+                    
+                    await sendAudioForTranscription(wavBlob);
                 });
                 
-                mediaRecorder.start();
+                mediaRecorder.start(1000); // Start with 1-second chunks
                 recordButton.disabled = true;
                 stopButton.disabled = false;
+                cancelButton.classList.remove('hidden');
                 recordingStatus.classList.remove('hidden');
             } catch (err) {
                 console.error('Microphone error:', err);
-                output.innerHTML = `<div class="text-red-600 flex items-center gap-2"><i class="fas fa-exclamation-circle"></i> Microphone access denied.</div>`;
+                showError('Microphone access denied or not available');
             }
         });
 
         // Stop recording
         stopButton.addEventListener('click', () => {
-            mediaRecorder.stop();
-            recordButton.disabled = false;
-            stopButton.disabled = true;
-            recordingStatus.classList.add('hidden');
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                recordButton.disabled = false;
+                stopButton.disabled = true;
+                cancelButton.classList.add('hidden');
+                recordingStatus.classList.add('hidden');
+            }
+        });
+
+        // Cancel recording
+        cancelButton.addEventListener('click', () => {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                // Clear the audio chunks
+                audioChunks = [];
+                // Reset UI
+                recordButton.disabled = false;
+                stopButton.disabled = true;
+                cancelButton.classList.add('hidden');
+                recordingStatus.classList.add('hidden');
+                // Show message
+                showError('Recording cancelled');
+            }
         });
 
         // Upload audio
         uploadButton.addEventListener('click', () => audioFile.click());
-        audioFile.addEventListener('change', (e) => {
+        audioFile.addEventListener('change', async (e) => {
             const file = e.target.files[0];
-            if (file) sendAudioToServer(file);
+            if (file) {
+                if (file.size === 0) {
+                    showError('The selected file is empty. Please choose a valid audio file.');
+                    return;
+                }
+                await sendAudioForTranscription(file);
+            }
         });
 
         // Toggle format
@@ -187,7 +247,219 @@
             }
         });
 
-        // Convert AudioBuffer to WAV format
+        // Clear all transcriptions
+        clearButton.addEventListener('click', () => {
+            transcriptions = [];
+            output.innerHTML = '';
+            output.removeAttribute('data-last-response');
+        });
+
+        // Send audio for transcription
+        async function sendAudioForTranscription(audioBlob) {
+            try {
+                showProcessingStatus();
+                
+                const formData = new FormData();
+                formData.append('audio', audioBlob, 'audio.wav');
+                
+                const response = await fetch('/api/transcribe', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                // Remove processing status before handling response
+                const processingStatus = output.querySelector('.bg-blue-50');
+                if (processingStatus) {
+                    processingStatus.remove();
+                }
+
+                let errorMessage = 'No speech was detected. Please try again.';
+                
+                if (!response.ok) {
+                    if (response.status === 500) {
+                        errorMessage = 'No speech was detected in the audio. Please try again.';
+                    } else {
+                        errorMessage = `Server responded with status ${response.status}. Please try again.`;
+                    }
+                    showError(errorMessage);
+                    return;
+                }
+
+                try {
+                    const result = await response.json();
+                    console.log('Server response:', result);
+                    
+                    if (result.status === 'success' && result.data) {
+                        if (!result.data.transcription || result.data.transcription.trim() === '') {
+                            showError('No speech was detected in the audio. Please try again.');
+                            return;
+                        }
+                        displayOutput(result.data);
+                        return;
+                    }
+                    
+                    if (result.error && result.error.includes('NoMatchDetails')) {
+                        if (result.error.includes('InitialSilenceTimeout')) {
+                            errorMessage = 'No speech was detected due to initial silence. Please start speaking sooner or try again.';
+                        } else {
+                            errorMessage = 'No speech could be recognized in the audio. Please try again.';
+                        }
+                    } else if (result.message) {
+                        errorMessage = result.message;
+                    } else if (result.error) {
+                        errorMessage = result.error;
+                    }
+                    
+                    showError(errorMessage);
+                
+                } catch (parseError) {
+                    console.error('Error parsing server response:', parseError);
+                    errorMessage = 'Invalid server response. Please try again.';
+                    showError(errorMessage);
+                }
+                
+            } catch (error) {
+                console.error('Error sending audio:', error);
+                const processingStatus = output.querySelector('.bg-blue-50');
+                if (processingStatus) {
+                    processingStatus.remove();
+                }
+                
+                let errorMessage = 'Failed to connect to the server. Please try again.';
+                if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
+                    errorMessage = 'Could not connect to the server. Please check your connection and try again.';
+                }
+                
+                showError(errorMessage);
+            }
+        }
+
+        function showProcessingStatus() {
+            // Remove any existing processing status first
+            const existingStatus = output.querySelector('.bg-blue-50');
+            if (existingStatus) {
+                existingStatus.remove();
+            }
+            
+            const statusDiv = document.createElement('div');
+            statusDiv.className = 'p-4 bg-blue-50 text-blue-700 rounded-lg';
+            statusDiv.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing audio...';
+            output.appendChild(statusDiv);
+        }
+
+        function showError(message) {
+            // Remove any existing processing status first
+            const processingStatus = output.querySelector('.bg-blue-50');
+            if (processingStatus) {
+                processingStatus.remove();
+            }
+            
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'p-4 bg-red-50 text-red-700 rounded-lg';
+            errorDiv.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${message}`;
+            output.appendChild(errorDiv);
+        }
+
+        function displayOutput(data) {
+            // Remove processing status
+            const processingStatus = output.querySelector('.bg-blue-50');
+            if (processingStatus) {
+                processingStatus.remove();
+            }
+
+            // Add new transcription to the array
+            transcriptions.push(data);
+
+            // Store the data for format toggle
+            output.setAttribute('data-last-response', JSON.stringify(transcriptions));
+
+            // Clear previous output
+            output.innerHTML = '';
+
+            const resultDiv = document.createElement('div');
+            resultDiv.className = 'p-4 bg-white border rounded-lg space-y-4';
+
+            if (isPrettyFormat) {
+                // Combine all transcriptions
+                const allTranscriptions = transcriptions.map(t => t.transcription).join(' ');
+                
+                // Combine and deduplicate medical terms
+                const combinedTerms = {};
+                transcriptions.forEach(t => {
+                    Object.entries(t.medical_terms || {}).forEach(([category, terms]) => {
+                        if (!combinedTerms[category]) {
+                            combinedTerms[category] = new Map();
+                        }
+                        terms.forEach(term => {
+                            // Use term.code as unique identifier
+                            if (!combinedTerms[category].has(term.code)) {
+                                combinedTerms[category].set(term.code, term);
+                            }
+                        });
+                    });
+                });
+
+                // Convert Map to Array for each category
+                Object.keys(combinedTerms).forEach(category => {
+                    combinedTerms[category] = Array.from(combinedTerms[category].values());
+                });
+
+                resultDiv.innerHTML = `
+                    <div class="font-semibold text-lg">Combined Transcription:</div>
+                    <div class="text-gray-700">${allTranscriptions}</div>
+                    <div class="font-semibold text-lg mt-4">Matched Terms:</div>
+                    <div class="space-y-2">
+                        ${Object.entries(combinedTerms)
+                            .filter(([_, terms]) => terms.length > 0)
+                            .map(([category, terms]) => `
+                                <div class="term-item p-3">
+                                    <div class="font-medium text-blue-700">${category.replace('_', ' ').toUpperCase()}</div>
+                                    <div class="mt-2 space-y-2">
+                                        ${terms.map(term => `
+                                            <div class="pl-4">
+                                                <div class="font-medium">${term.name}</div>
+                                                <div class="text-sm text-gray-600">${term.description}</div>
+                                                <div class="text-xs text-gray-500">Code: ${term.code}</div>
+                                            </div>
+                                        `).join('')}
+                                    </div>
+                                </div>
+                            `).join('')}
+                    </div>
+                `;
+            } else {
+                // Raw JSON format - combine all data
+                const combinedData = {
+                    transcription: transcriptions.map(t => t.transcription).join(' '),
+                    medical_terms: {}
+                };
+
+                // Combine medical terms
+                transcriptions.forEach(t => {
+                    Object.entries(t.medical_terms || {}).forEach(([category, terms]) => {
+                        if (!combinedData.medical_terms[category]) {
+                            combinedData.medical_terms[category] = new Map();
+                        }
+                        terms.forEach(term => {
+                            combinedData.medical_terms[category].set(term.code, term);
+                        });
+                    });
+                });
+
+                // Convert Maps to Arrays
+                Object.keys(combinedData.medical_terms).forEach(category => {
+                    combinedData.medical_terms[category] = Array.from(combinedData.medical_terms[category].values());
+                });
+
+                resultDiv.innerHTML = `
+                    <pre class="whitespace-pre-wrap text-sm">${JSON.stringify(combinedData, null, 2)}</pre>
+                `;
+            }
+
+            output.appendChild(resultDiv);
+        }
+
+        // Optimized WAV conversion
         async function convertToWav(audioBuffer) {
             const numChannels = 1;  // Mono
             const sampleRate = 16000;
@@ -196,47 +468,56 @@
             
             const bytesPerSample = bitDepth / 8;
             const blockAlign = numChannels * bytesPerSample;
-            
             const dataLength = audioBuffer.length * numChannels * bytesPerSample;
+            
+            // Pre-allocate buffer
             const buffer = new ArrayBuffer(44 + dataLength);
             const view = new DataView(buffer);
             
-            // RIFF identifier
-            writeString(view, 0, 'RIFF');
-            // RIFF chunk length
-            view.setUint32(4, 36 + dataLength, true);
-            // RIFF type
-            writeString(view, 8, 'WAVE');
-            // format chunk identifier
-            writeString(view, 12, 'fmt ');
-            // format chunk length
-            view.setUint32(16, 16, true);
-            // sample format (raw)
-            view.setUint16(20, format, true);
-            // channel count
-            view.setUint16(22, numChannels, true);
-            // sample rate
-            view.setUint32(24, sampleRate, true);
-            // byte rate (sample rate * block align)
-            view.setUint32(28, sampleRate * blockAlign, true);
-            // block align (channel count * bytes per sample)
-            view.setUint16(32, blockAlign, true);
-            // bits per sample
-            view.setUint16(34, bitDepth, true);
-            // data chunk identifier
-            writeString(view, 36, 'data');
-            // data chunk length
-            view.setUint32(40, dataLength, true);
+            // Write WAV header efficiently
+            const writeHeader = () => {
+                // RIFF header
+                writeString(view, 0, 'RIFF');
+                view.setUint32(4, 36 + dataLength, true);
+                writeString(view, 8, 'WAVE');
+                
+                // Format chunk
+                writeString(view, 12, 'fmt ');
+                view.setUint32(16, 16, true);
+                view.setUint16(20, format, true);
+                view.setUint16(22, numChannels, true);
+                view.setUint32(24, sampleRate, true);
+                view.setUint32(28, sampleRate * blockAlign, true);
+                view.setUint16(32, blockAlign, true);
+                view.setUint16(34, bitDepth, true);
+                
+                // Data chunk
+                writeString(view, 36, 'data');
+                view.setUint32(40, dataLength, true);
+            };
             
-            // Write the PCM samples
-            const offset = 44;
+            // Write header
+            writeHeader();
+            
+            // Write PCM samples efficiently
             const channelData = audioBuffer.getChannelData(0);
+            const offset = 44;
+            
+            // Use TypedArray for faster processing
+            const samples = new Int16Array(channelData.length);
             for (let i = 0; i < channelData.length; i++) {
                 const sample = Math.max(-1, Math.min(1, channelData[i]));
-                const value = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
-                view.setInt16(offset + i * 2, value, true);
+                samples[i] = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
             }
             
+            // Copy samples to buffer
+            const samplesBuffer = samples.buffer;
+            const samplesView = new DataView(samplesBuffer);
+            for (let i = 0; i < samples.length; i++) {
+                view.setInt16(offset + i * 2, samplesView.getInt16(i * 2, true), true);
+            }
+            
+            // Create WAV blob with correct MIME type
             return new Blob([buffer], { type: 'audio/wav' });
         }
 
@@ -244,155 +525,6 @@
             for (let i = 0; i < string.length; i++) {
                 view.setUint8(offset + i, string.charCodeAt(i));
             }
-        }
-
-        // Send audio to server
-        async function sendAudioToServer(audioBlob) {
-            try {
-                const formData = new FormData();
-                formData.append('audio', audioBlob, 'recording.wav');
-
-                // Show loading state
-                output.innerHTML = `<div class="flex justify-center items-center gap-2">
-                    <svg class="animate-spin h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l4-4-4-4v4a8 8 0 11-8 8z"></path>
-                    </svg>
-                    Processing audio...
-                </div>`;
-
-                const response = await fetch('/api/transcribe', {
-                    method: 'POST',
-                    body: formData
-                });
-
-                const data = await response.json();
-                console.log('Server response:', data); // Debug log
-
-                if (data.status === 'success' && data.data) {
-                    displayOutput(data.data);
-                } else {
-                    showError(data.message || 'Failed to process audio');
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                showError('Failed to process audio');
-            }
-        }
-
-        // Display output
-        function displayOutput(data) {
-            if (!data) {
-                showError('No data received from server');
-                return;
-            }
-
-            // Store the current response for format toggle
-            output.setAttribute('data-last-response', JSON.stringify(data));
-
-            const outputDiv = document.getElementById('output');
-            outputDiv.innerHTML = '';
-
-            if (!isPrettyFormat) {
-                // Raw JSON format
-                const pre = document.createElement('pre');
-                pre.className = 'bg-gray-100 p-4 rounded-lg text-sm overflow-auto';
-                pre.textContent = JSON.stringify(data, null, 2);
-                outputDiv.appendChild(pre);
-                return;
-            }
-
-            // Pretty format
-            // Display transcription
-            if (data.transcription) {
-                const transcriptionDiv = document.createElement('div');
-                transcriptionDiv.className = 'mb-6';
-                transcriptionDiv.innerHTML = `
-                    <h3 class="text-lg font-semibold mb-2">Transcription</h3>
-                    <p class="text-gray-700">${data.transcription}</p>
-                `;
-                outputDiv.appendChild(transcriptionDiv);
-            }
-
-            // Display medical terms
-            if (data.medical_terms) {
-                const termsDiv = document.createElement('div');
-                termsDiv.className = 'space-y-4';
-                
-                // Create sections for each category
-                const categories = {
-                    lab_tests: 'Lab Tests',
-                    diagnoses: 'Diagnoses',
-                    procedures: 'Procedures',
-                    medications: 'Medications',
-                    treatments: 'Treatments'
-                };
-
-                for (const [category, label] of Object.entries(categories)) {
-                    const terms = data.medical_terms[category] || [];
-                    if (terms.length > 0) {
-                        const categoryDiv = document.createElement('div');
-                        categoryDiv.className = 'bg-white rounded-lg shadow p-4';
-                        categoryDiv.innerHTML = `
-                            <h3 class="text-lg font-semibold mb-2">${label}</h3>
-                            <ul class="space-y-2">
-                                ${terms.map(term => `
-                                    <li class="flex items-start">
-                                        <span class="font-medium">${term.name}</span>
-                                        <span class="mx-2 text-gray-400">|</span>
-                                        <code class="bg-gray-100 px-2 py-1 rounded text-sm">${term.code}</code>
-                                        <span class="mx-2 text-gray-400">|</span>
-                                        <span class="text-gray-600">${term.description}</span>
-                                    </li>
-                                `).join('')}
-                            </ul>
-                        `;
-                        termsDiv.appendChild(categoryDiv);
-                    }
-                }
-
-                if (termsDiv.children.length > 0) {
-                    outputDiv.appendChild(termsDiv);
-                } else {
-                    const noTermsDiv = document.createElement('div');
-                    noTermsDiv.className = 'text-gray-500 text-center py-4';
-                    noTermsDiv.textContent = 'No medical terms found in the transcription';
-                    outputDiv.appendChild(noTermsDiv);
-                }
-            }
-
-            // Display summary if available
-            if (data.summary) {
-                const summaryDiv = document.createElement('div');
-                summaryDiv.className = 'mt-6 grid grid-cols-2 md:grid-cols-5 gap-4';
-                summaryDiv.innerHTML = `
-                    <div class="bg-blue-50 p-4 rounded-lg text-center">
-                        <div class="text-2xl font-bold text-blue-600">${data.summary.lab_tests}</div>
-                        <div class="text-sm text-blue-800">Lab Tests</div>
-                    </div>
-                    <div class="bg-green-50 p-4 rounded-lg text-center">
-                        <div class="text-2xl font-bold text-green-600">${data.summary.diagnoses}</div>
-                        <div class="text-sm text-green-800">Diagnoses</div>
-                    </div>
-                    <div class="bg-purple-50 p-4 rounded-lg text-center">
-                        <div class="text-2xl font-bold text-purple-600">${data.summary.procedures}</div>
-                        <div class="text-sm text-purple-800">Procedures</div>
-                    </div>
-                    <div class="bg-yellow-50 p-4 rounded-lg text-center">
-                        <div class="text-2xl font-bold text-yellow-600">${data.summary.medications}</div>
-                        <div class="text-sm text-yellow-800">Medications</div>
-                    </div>
-                    <div class="bg-red-50 p-4 rounded-lg text-center">
-                        <div class="text-2xl font-bold text-red-600">${data.summary.treatments}</div>
-                        <div class="text-sm text-red-800">Treatments</div>
-                    </div>
-                `;
-                outputDiv.appendChild(summaryDiv);
-            }
-        }
-
-        function showError(message) {
-            output.innerHTML = `<div class="text-red-600 flex items-center gap-2"><i class="fas fa-exclamation-circle"></i> ${message}</div>`;
         }
     </script>
 </body>

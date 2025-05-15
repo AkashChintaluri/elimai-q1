@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
 import azure.cognitiveservices.speech as speechsdk
 import pandas as pd
 import os
@@ -12,6 +13,9 @@ from scipy.io import wavfile
 import json
 from datetime import datetime
 import tempfile
+import asyncio
+import aiohttp
+from concurrent.futures import ThreadPoolExecutor
 
 # Set up logging - helps us track what's happening
 logging.basicConfig(level=logging.INFO)
@@ -32,7 +36,12 @@ if not speech_key or not service_region:
 logger.info(f"Got speech key? {'Yes' if speech_key else 'No'}")
 logger.info(f"Got service region? {'Yes' if service_region else 'No'}")
 
+# Initialize Flask app
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
+
+# Thread pool for CPU-intensive tasks
+thread_pool = ThreadPoolExecutor(max_workers=4)
 
 # Load up our medical terms from CSV
 MEDICAL_TERMS_PATH = Path(__file__).parent / "data" / "medical_terms.csv"
@@ -72,6 +81,10 @@ def save_medical_terms(df):
 def convert_to_wav(audio_file):
     """Convert any audio file to WAV format that Azure can understand"""
     try:
+        # Check if file is empty
+        if audio_file.content_length == 0:
+            raise ValueError("Empty audio file provided")
+
         # Set up our temp files
         temp_input = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
         temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
@@ -83,6 +96,10 @@ def convert_to_wav(audio_file):
         logger.info("Reading audio data")
         # Read the audio data
         data, samplerate = sf.read(temp_input.name)
+        
+        # Check if audio data is empty or silent
+        if len(data) == 0 or np.all(np.abs(data) < 0.01):
+            raise ValueError("Audio file contains no sound")
         
         # If it's stereo, mix it down to mono
         if len(data.shape) > 1:
@@ -208,10 +225,22 @@ def match_medical_terms(text, medical_terms):
         "treatments": []
     }
     
+    # Split text into words for better matching
+    text_words = set(text.split())
+    
     # Check each term we know about
     for term in medical_terms:
         term_name = term['name'].lower()
-        if term_name in text:
+        term_words = set(term_name.split())
+        
+        # Calculate similarity between term and text
+        # Using Jaccard similarity for word-level matching
+        intersection = len(text_words.intersection(term_words))
+        union = len(text_words.union(term_words))
+        similarity = intersection / union if union > 0 else 0
+        
+        # If similarity is above threshold or exact match
+        if similarity >= 0.5 or term_name in text:
             category = term['category']
             # Put it in the right category
             if category == 'lab_test':
@@ -330,67 +359,92 @@ def add_term():
             'message': str(e)
         }), 500, {'Content-Type': 'application/json'}
 
-@app.route('/api/transcribe', methods=['POST'])
-def transcribe():
-    """Take some audio, figure out what was said, and find any medical terms"""
+async def process_audio_async(audio_file):
+    """Asynchronously process audio file and return transcription"""
     try:
-        # Make sure they sent us an audio file
+        # Run CPU-intensive tasks in thread pool
+        loop = asyncio.get_event_loop()
+        transcription = await loop.run_in_executor(
+            thread_pool,
+            transcribe_audio,
+            audio_file
+        )
+        
+        if not transcription:
+            return None
+            
+        # Process medical terms
+        medical_terms = load_medical_terms()
+        matched_terms = match_medical_terms(transcription, medical_terms)
+        
+        return {
+            'transcription': transcription,
+            'medical_terms': matched_terms
+        }
+    except Exception as e:
+        logger.error(f"Error in process_audio_async: {str(e)}", exc_info=True)
+        return None
+
+@app.route('/api/transcribe', methods=['POST'])
+async def transcribe():
+    """HTTP endpoint for audio transcription"""
+    try:
         if 'audio' not in request.files:
             return jsonify({
                 'status': 'error',
-                'message': 'Hey, where\'s the audio file?'
-            }), 400, {'Content-Type': 'application/json'}
+                'message': 'No audio file provided'
+            }), 400
         
         audio_file = request.files['audio']
         if not audio_file.filename:
             return jsonify({
                 'status': 'error',
-                'message': 'You need to pick a file first'
-            }), 400, {'Content-Type': 'application/json'}
+                'message': 'Empty file'
+            }), 400
         
-        # Check if it's a file type we can handle
         if not audio_file.filename.lower().endswith(('.wav', '.mp3')):
             return jsonify({
                 'status': 'error',
-                'message': 'Sorry, we only do WAV and MP3 files'
-            }), 400, {'Content-Type': 'application/json'}
+                'message': 'Unsupported file format. Please provide a WAV or MP3 file.'
+            }), 400
         
-        # Send it to Azure to figure out what was said
-        transcription = transcribe_audio(audio_file)
-        if not transcription:
+        try:
+            result = await process_audio_async(audio_file)
+        except ValueError as ve:
             return jsonify({
                 'status': 'error',
-                'message': 'Hmm, we couldn\'t understand what was said'
-            }), 500, {'Content-Type': 'application/json'}
+                'message': str(ve)
+            }), 400
         
-        # Look for any medical terms in what was said
-        medical_terms = load_medical_terms()
-        matched_terms = match_medical_terms(transcription, medical_terms)
-        
-        # Put it all together
-        response = {
-            'status': 'success',
-            'data': {
-                'transcription': transcription,
-                'medical_terms': matched_terms,
-                'summary': {
-                    'lab_tests': len(matched_terms["lab_tests"]),
-                    'diagnoses': len(matched_terms["diagnoses"]),
-                    'procedures': len(matched_terms["procedures"]),
-                    'medications': len(matched_terms["medications"]),
-                    'treatments': len(matched_terms["treatments"])
-                }
-            }
-        }
-        
-        return jsonify(response), 200, {'Content-Type': 'application/json'}
+        if result:
+            if not result.get('transcription'):
+                return jsonify({
+                    'status': 'error',
+                    'message': 'No speech was detected in the audio'
+                }), 400
+            return jsonify({
+                'status': 'success',
+                'data': result
+            }), 200
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'Failed to process audio'
+            }), 500
+            
     except Exception as e:
-        logger.error(f"Something went wrong with the transcription: {str(e)}")
+        logger.error(f"Error in transcribe endpoint: {str(e)}", exc_info=True)
         return jsonify({
             'status': 'error',
             'message': str(e)
-        }), 500, {'Content-Type': 'application/json'}
+        }), 500
 
 if __name__ == '__main__':
-    # Start the server
-    app.run(debug=True, port=5000) 
+    import hypercorn.asyncio
+    import hypercorn.config
+    
+    config = hypercorn.config.Config()
+    config.bind = ["0.0.0.0:5000"]
+    config.use_reloader = True
+    
+    asyncio.run(hypercorn.asyncio.serve(app, config)) 
